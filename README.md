@@ -45,6 +45,8 @@ Install at least httpx (or the Go httpx) and subfinder for speed.
 # or use python orchestrator
 python3 recon.py example.com
 
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 inspect output/example.com/ for:
 
 subdomains.txt — all discovered subdomains
