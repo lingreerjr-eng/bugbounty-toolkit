@@ -101,3 +101,15 @@ you'll find subdomains, alive, wayback_urls.txt, js_files.txt, js_endpoints.txt,
 python3 tools/burp_export.py output/example.com
 
 4) Import 'burp_urls.txt' into Burp via Target -> right-click -> Import URLs
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Quick troubleshooting
+
+No subdomains.txt? Check subdomains_crtsh.txt and subfinder.txt to see which source failed.
+
+alive.txt empty? Try installing httpx or inspect network egress/rate limits.
+
+js_endpoints.txt empty but js_files.txt has URLs? Try lowering the JS fetch concurrency or increasing timeout in tools/js_endpoints_async.py (adjust CONCURRENCY / REQUEST_TIMEOUT / MAX_SIZE).
+
+Permission errors? Run from repo root and ensure your user can write the output/ folder.
