@@ -3,3 +3,5 @@ beautifulsoup4
 tldextract
 python-multipart
 python-dateutil
+aiohttp
+async-timeout
