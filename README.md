@@ -84,6 +84,7 @@ For private programs, get written authorization if you’ll do intrusive testing
 
 # Install requirements with:
 source .venv/bin/activate
+
 pip install -r requirements.txt
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
