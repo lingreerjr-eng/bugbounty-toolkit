@@ -86,3 +86,17 @@ For private programs, get written authorization if you’ll do intrusive testing
 source .venv/bin/activate
 pip install -r requirements.txt
 
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Quick example workflow
+1) run async recon
+python3 recon_async.py example.com
+
+2) after it completes:
+ls output/example.com
+you'll find subdomains, alive, wayback_urls.txt, js_files.txt, js_endpoints.txt, etc.
+
+3) export for Burp
+python3 tools/burp_export.py output/example.com
+
+4) Import 'burp_urls.txt' into Burp via Target -> right-click -> Import URLs
