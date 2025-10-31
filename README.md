@@ -79,3 +79,10 @@ Add a report/ generator that summarizes findings and creates templated disclosur
 Only run active scans (ffuf, nuclei -severity high, nmap -sS) on targets you are authorized to test. For public bug bounties, follow program scope and rules.
 
 For private programs, get written authorization if you’ll do intrusive testing.
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Install requirements with:
+source .venv/bin/activate
+pip install -r requirements.txt
+
