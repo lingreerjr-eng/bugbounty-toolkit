@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 recon_async.py
-Async recon orchestrator. Uses asyncio + aiohttp for network tasks,
-and will call local binaries (subfinder, httpx, waybackurls, gau, nuclei)
-if they exist. Falls back to HTTP APIs when needed.
+Async recon orchestrator with enhanced subdomain enumeration
 """
 
 import asyncio
@@ -14,13 +12,19 @@ from pathlib import Path
 import argparse
 import json
 import os
-from enhanced_subdomain_enum import SubdomainEnumerator
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE / "tools"
 OUTPUT = HERE / "output"
 
-# concurrency knobs
+# Import the enhanced subdomain enumerator if available
+try:
+    from enhanced_subdomain_enum import SubdomainEnumerator
+    ENHANCED_ENUM_AVAILABLE = True
+except ImportError:
+    ENHANCED_ENUM_AVAILABLE = False
+    print("[!] enhanced_subdomain_enum.py not found - using basic enumeration only")
+
 DEFAULT_CONCURRENCY = 20
 
 async def run_subprocess(cmd, capture=False):
@@ -37,11 +41,95 @@ async def run_subprocess(cmd, capture=False):
         await proc.wait()
         return proc.returncode, "", ""
 
-async def enhanced_subdomain_discovery(domain, outdir):
-    """Use the enhanced multi-source enumerator"""
-    enumerator = SubdomainEnumerator(domain, outdir, concurrency=50)
-    await enumerator.enumerate_all()
-    return outdir / f"{domain}_resolved.txt"
+async def enhanced_subdomain_discovery(domain, outdir, concurrency=50):
+    """
+    Use the enhanced multi-source subdomain enumerator.
+    Falls back to basic enumeration if not available.
+    """
+    if ENHANCED_ENUM_AVAILABLE:
+        print("[*] Using enhanced multi-source subdomain enumeration...")
+        enumerator = SubdomainEnumerator(domain, outdir, concurrency=concurrency)
+        await enumerator.enumerate_all()
+        
+        # Return paths to the generated files
+        return {
+            'all': outdir / f"{domain}_all_subdomains.txt",
+            'resolved': outdir / f"{domain}_resolved.txt",
+            'interesting': outdir / f"{domain}_interesting.txt",
+            'resolved_ips': outdir / f"{domain}_resolved_ips.txt",
+        }
+    else:
+        # Fallback to basic enumeration
+        print("[*] Using basic subdomain enumeration (crt.sh + subfinder)...")
+        sub_crt = outdir / "subdomains_crtsh.txt"
+        subfinder_out = outdir / "subfinder.txt"
+        
+        await crtsh_enum(domain, sub_crt)
+        await run_subfinder(domain, subfinder_out)
+        
+        # Merge results
+        subs = set()
+        for p in (sub_crt, subfinder_out):
+            if p.exists():
+                subs.update([l.strip() for l in p.read_text().splitlines() if l.strip()])
+        
+        subs_all = outdir / "subdomains.txt"
+        if subs:
+            subs_all.write_text("\n".join(sorted(subs)))
+            print(f"[+] merged subdomains into {subs_all}")
+        
+        return {
+            'all': subs_all,
+            'resolved': subs_all,  # No resolution in basic mode
+            'interesting': None,
+        }
+
+async def crtsh_enum(domain, outpath):
+    """Use local tools/crtsh_enum.py (sync) via subprocess or fallback to crt.sh JSON"""
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    script = TOOLS / "crtsh_enum.py"
+    if script.exists():
+        rc, out, err = await run_subprocess([sys.executable, str(script), domain], capture=True)
+        if rc == 0 and out:
+            outpath.write_text(out)
+            print(f"[+] crtsh_enum wrote {outpath}")
+            return
+    # fallback: direct HTTP query
+    print("[*] crt.sh script missing or failed; trying HTTP fallback via curl")
+    if shutil.which("curl"):
+        c = ["curl", "-s", f"https://crt.sh/?q=%25.{domain}&output=json"]
+        rc, out, err = await run_subprocess(c, capture=True)
+        if rc == 0 and out:
+            try:
+                entries = json.loads(out)
+                subs = set()
+                for e in entries:
+                    for key in ("common_name","name_value"):
+                        v = e.get(key)
+                        if not v:
+                            continue
+                        if isinstance(v, list):
+                            vals = v
+                        else:
+                            vals = [v]
+                        for n in vals:
+                            for part in str(n).splitlines():
+                                part = part.strip().lower()
+                                if part.endswith(domain):
+                                    subs.add(part)
+                outpath.write_text("\n".join(sorted(subs)))
+                print(f"[+] crt.sh fallback wrote {outpath}")
+                return
+            except Exception as e:
+                print("[!] crt.sh JSON parse failed:", e)
+    print("[!] crt.sh enumeration failed or produced no output")
+
+async def run_subfinder(domain, outpath):
+    if shutil.which("subfinder"):
+        print("[*] running subfinder...")
+        await run_subprocess(["subfinder", "-d", domain, "-o", str(outpath)])
+    else:
+        print("[!] subfinder not installed; skipping subfinder")
 
 async def probe_httpx(in_subdomains_path, out_alive_path):
     out_alive_path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +143,6 @@ async def probe_httpx(in_subdomains_path, out_alive_path):
 
 async def _internal_http_probe(in_subdomains_path, out_alive_path, concurrency=50):
     import aiohttp
-    from urllib.parse import urlparse
 
     subs = []
     if in_subdomains_path.exists():
@@ -69,7 +156,6 @@ async def _internal_http_probe(in_subdomains_path, out_alive_path, concurrency=5
     results = []
 
     async def check(host):
-        # try https then http
         async with sem:
             async with aiohttp.ClientSession(timeout=timeout) as sess:
                 for scheme in ("https://", "http://"):
@@ -79,7 +165,6 @@ async def _internal_http_probe(in_subdomains_path, out_alive_path, concurrency=5
                             title = ""
                             try:
                                 txt = await resp.text()
-                                # cheap title extraction
                                 i1 = txt.find("<title")
                                 if i1 != -1:
                                     i2 = txt.find(">", i1)
@@ -93,7 +178,6 @@ async def _internal_http_probe(in_subdomains_path, out_alive_path, concurrency=5
                             return
                     except Exception:
                         continue
-        # nothing alive
 
     tasks = [asyncio.create_task(check(h)) for h in subs]
     await asyncio.gather(*tasks)
@@ -101,7 +185,6 @@ async def _internal_http_probe(in_subdomains_path, out_alive_path, concurrency=5
     print(f"[+] wrote {out_alive_path}")
 
 async def gather_wayback_and_js(domain, out_urls, out_js):
-    # prefer waybackurls/gau if installed, else use CDX API
     out_urls.parent.mkdir(parents=True, exist_ok=True)
     urls = set()
     if shutil.which("waybackurls"):
@@ -114,7 +197,6 @@ async def gather_wayback_and_js(domain, out_urls, out_js):
             urls.update(line.strip() for line in out.splitlines() if line.strip())
 
     if not urls:
-        # fallback to web.archive.org CDX API using curl
         if shutil.which("curl"):
             cdx = f"http://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original&collapse=urlkey"
             rc, out, err = await run_subprocess(["curl", "-s", cdx], capture=True)
@@ -135,67 +217,117 @@ async def run_nuclei(alive_path, out_nuclei):
         print("[!] nuclei not installed; skipping nuclei scan")
         return
     out_nuclei.parent.mkdir(parents=True, exist_ok=True)
-    # try to extract hosts/urls for nuclei (basic)
     await run_subprocess(["nuclei", "-l", str(alive_path), "-silent", "-o", str(out_nuclei)])
 
 async def js_endpoint_worker(js_list_path, out_endpoints_path, concurrency=30):
-    # call the async JS endpoint extractor
     script = TOOLS / "js_endpoints_async.py"
     if script.exists():
         await run_subprocess([sys.executable, str(script), str(js_list_path), str(out_endpoints_path)], capture=False)
     else:
         print("[!] js_endpoints_async.py missing; cannot extract endpoints")
 
+async def generate_permutations(domain, discovered_subs_path, outdir):
+    """Generate intelligent subdomain permutations"""
+    script = TOOLS / "subdomain_permutations.py"
+    if not script.exists():
+        print("[!] subdomain_permutations.py not found; skipping permutation generation")
+        return None
+    
+    if not discovered_subs_path.exists():
+        print("[!] No discovered subdomains to generate permutations from")
+        return None
+    
+    perms_file = outdir / "subdomain_permutations.txt"
+    print("[*] Generating intelligent subdomain permutations...")
+    await run_subprocess([sys.executable, str(script), domain, str(discovered_subs_path), str(perms_file)])
+    
+    return perms_file
+
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("target")
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
+    parser.add_argument("target", help="Target domain")
+    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Concurrency level")
+    parser.add_argument("--generate-permutations", action="store_true", help="Generate subdomain permutations")
+    parser.add_argument("--skip-http-probe", action="store_true", help="Skip HTTP probing")
+    parser.add_argument("--skip-js", action="store_true", help="Skip JS endpoint extraction")
+    parser.add_argument("--skip-nuclei", action="store_true", help="Skip nuclei scan")
     args = parser.parse_args()
+    
     target = args.target
-
     outdir = OUTPUT / target
     outdir.mkdir(parents=True, exist_ok=True)
 
-    sub_crt = outdir / "subdomains_crtsh.txt"
-    subfinder_out = outdir / "subfinder.txt"
-    subs_all = outdir / "subdomains.txt"
-    alive = outdir / "alive.txt"
-    wayback_urls = outdir / "wayback_urls.txt"
-    js_files = outdir / "js_files.txt"
-    js_endpoints = outdir / "js_endpoints.txt"
-    nuclei_out = outdir / "nuclei.txt"
+    print(f"\n{'='*60}")
+    print(f"  RECON TOOLKIT - Target: {target}")
+    print(f"{'='*60}\n")
 
-    await crtsh_enum(target, sub_crt)
-    await run_subfinder(target, subfinder_out)
-
-    # merge unique subs
-    subs = set()
-    for p in (sub_crt, subfinder_out):
-        if p.exists():
-            subs.update([l.strip() for l in p.read_text().splitlines() if l.strip()])
-    if subs:
-        subs_all.write_text("\n".join(sorted(subs)))
-        print(f"[+] merged subdomains into {subs_all}")
+    # Phase 1: Enhanced Subdomain Discovery
+    print("[Phase 1] Subdomain Discovery")
+    print("-" * 60)
+    subdomain_files = await enhanced_subdomain_discovery(target, outdir, concurrency=args.concurrency)
+    
+    # Use resolved subdomains if available, otherwise use all
+    active_subs_file = subdomain_files.get('resolved') or subdomain_files.get('all')
+    
+    # Phase 2: Optional Permutation Generation
+    if args.generate_permutations and active_subs_file:
+        print(f"\n[Phase 2] Permutation Generation")
+        print("-" * 60)
+        perms_file = await generate_permutations(target, active_subs_file, outdir)
+        if perms_file:
+            print(f"[*] Permutations saved to {perms_file}")
+            print("[*] You can resolve these with: puredns resolve {perms_file} -r resolvers.txt")
+    
+    # Phase 3: HTTP Probing
+    if not args.skip_http_probe and active_subs_file:
+        print(f"\n[Phase 3] HTTP Probing")
+        print("-" * 60)
+        alive = outdir / "alive.txt"
+        await probe_httpx(active_subs_file, alive)
     else:
-        print("[!] no subdomains discovered yet")
-
-    # probe
-    await probe_httpx(subs_all, alive)
-
-    # historical urls + js
-    await gather_wayback_and_js(target, wayback_urls, js_files)
-
-    # JS endpoints (async fetcher)
-    await js_endpoint_worker(js_files, js_endpoints, concurrency=args.concurrency)
-
-    # optional nuclei scan
-    await run_nuclei(alive, nuclei_out)
-
-    print("[*] Recon complete. Outputs in", outdir)
+        alive = outdir / "alive.txt"
+    
+    # Phase 4: Historical URLs + JS
+    if not args.skip_js:
+        print(f"\n[Phase 4] Historical URLs & JavaScript Discovery")
+        print("-" * 60)
+        wayback_urls = outdir / "wayback_urls.txt"
+        js_files = outdir / "js_files.txt"
+        js_endpoints = outdir / "js_endpoints.txt"
+        
+        await gather_wayback_and_js(target, wayback_urls, js_files)
+        await js_endpoint_worker(js_files, js_endpoints, concurrency=args.concurrency)
+    
+    # Phase 5: Vulnerability Scanning
+    if not args.skip_nuclei and alive.exists():
+        print(f"\n[Phase 5] Vulnerability Scanning")
+        print("-" * 60)
+        nuclei_out = outdir / "nuclei.txt"
+        await run_nuclei(alive, nuclei_out)
+    
+    # Summary
+    print(f"\n{'='*60}")
+    print("  RECON COMPLETE")
+    print(f"{'='*60}")
+    print(f"\nResults saved to: {outdir}")
+    print("\nKey files:")
+    if subdomain_files.get('resolved'):
+        print(f"  - Resolved subdomains: {subdomain_files['resolved'].name}")
+    if subdomain_files.get('interesting'):
+        print(f"  - Interesting targets: {subdomain_files['interesting'].name}")
+    if alive.exists():
+        print(f"  - Live HTTP hosts: {alive.name}")
+    
+    print("\nNext steps:")
+    print("  1. Review interesting subdomains for high-value targets")
+    print("  2. Check alive.txt for active web services")
+    print("  3. Review js_endpoints.txt for API endpoints")
+    if args.generate_permutations:
+        print("  4. Resolve generated permutations with massdns/puredns/shuffledns")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Interrupted")
-
+        print("\n[!] Interrupted by user")
+        sys.exit(1)
