@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 recon_async.py
-Async recon orchestrator with enhanced subdomain enumeration
+Async recon orchestrator with enhanced subdomain enumeration,
+robots.txt parsing, and sitemap parsing
 """
 
 import asyncio
@@ -212,6 +213,23 @@ async def gather_wayback_and_js(domain, out_urls, out_js):
     out_js.write_text("\n".join(sorted(js_files)))
     print(f"[+] wrote {out_urls} and {out_js}")
 
+async def parse_robots_and_sitemaps(alive_file, outdir):
+    """Parse robots.txt and sitemap.xml files from alive hosts"""
+    script = TOOLS / "robots_sitemap_parser.py"
+    if not script.exists():
+        print("[!] robots_sitemap_parser.py not found; skipping robots/sitemap parsing")
+        return None
+    
+    if not alive_file.exists():
+        print("[!] No alive hosts file; skipping robots/sitemap parsing")
+        return None
+    
+    robots_outdir = outdir / "robots_sitemap"
+    print("[*] Parsing robots.txt and sitemap.xml files...")
+    await run_subprocess([sys.executable, str(script), str(alive_file), str(robots_outdir)])
+    
+    return robots_outdir
+
 async def run_nuclei(alive_path, out_nuclei):
     if not shutil.which("nuclei"):
         print("[!] nuclei not installed; skipping nuclei scan")
@@ -251,6 +269,7 @@ async def main():
     parser.add_argument("--skip-http-probe", action="store_true", help="Skip HTTP probing")
     parser.add_argument("--skip-js", action="store_true", help="Skip JS endpoint extraction")
     parser.add_argument("--skip-nuclei", action="store_true", help="Skip nuclei scan")
+    parser.add_argument("--skip-robots", action="store_true", help="Skip robots.txt and sitemap parsing")
     args = parser.parse_args()
     
     target = args.target
@@ -287,9 +306,15 @@ async def main():
     else:
         alive = outdir / "alive.txt"
     
-    # Phase 4: Historical URLs + JS
+    # Phase 4: Robots.txt & Sitemap Parsing (NEW!)
+    if not args.skip_robots and alive.exists():
+        print(f"\n[Phase 4] Robots.txt & Sitemap.xml Parsing")
+        print("-" * 60)
+        robots_outdir = await parse_robots_and_sitemaps(alive, outdir)
+    
+    # Phase 5: Historical URLs + JS
     if not args.skip_js:
-        print(f"\n[Phase 4] Historical URLs & JavaScript Discovery")
+        print(f"\n[Phase 5] Historical URLs & JavaScript Discovery")
         print("-" * 60)
         wayback_urls = outdir / "wayback_urls.txt"
         js_files = outdir / "js_files.txt"
@@ -298,9 +323,9 @@ async def main():
         await gather_wayback_and_js(target, wayback_urls, js_files)
         await js_endpoint_worker(js_files, js_endpoints, concurrency=args.concurrency)
     
-    # Phase 5: Vulnerability Scanning
+    # Phase 6: Vulnerability Scanning
     if not args.skip_nuclei and alive.exists():
-        print(f"\n[Phase 5] Vulnerability Scanning")
+        print(f"\n[Phase 6] Vulnerability Scanning")
         print("-" * 60)
         nuclei_out = outdir / "nuclei.txt"
         await run_nuclei(alive, nuclei_out)
@@ -317,13 +342,20 @@ async def main():
         print(f"  - Interesting targets: {subdomain_files['interesting'].name}")
     if alive.exists():
         print(f"  - Live HTTP hosts: {alive.name}")
+    if (outdir / "robots_sitemap").exists():
+        print(f"  - Robots/Sitemap findings: robots_sitemap/")
+        print(f"    · All URLs: robots_sitemap/all_urls.txt")
+        print(f"    · Disallowed paths: robots_sitemap/robots_disallowed.txt")
+        print(f"    · Interesting URLs: robots_sitemap/interesting_all.txt")
     
     print("\nNext steps:")
     print("  1. Review interesting subdomains for high-value targets")
     print("  2. Check alive.txt for active web services")
-    print("  3. Review js_endpoints.txt for API endpoints")
+    print("  3. Review robots_sitemap/robots_disallowed.txt (often contains sensitive paths!)")
+    print("  4. Check robots_sitemap/interesting_*.txt files")
+    print("  5. Review js_endpoints.txt for API endpoints")
     if args.generate_permutations:
-        print("  4. Resolve generated permutations with massdns/puredns/shuffledns")
+        print("  6. Resolve generated permutations with massdns/puredns/shuffledns")
 
 if __name__ == "__main__":
     try:
