@@ -4,7 +4,8 @@ Quick recon and triage toolkit for bug bounty recon. Modular, pluggable, and des
 Usage:
 1. Install dependencies
 2. Run: ./recon.sh example.com
-3. Inspect outputs in output/example.com
+or      python recon_async.py example.com
+4. Inspect outputs in output/example.com
 
 Author: onyx
 
@@ -33,21 +34,24 @@ go install -v github.com/ffuf/ffuf@latest
 
 go install -v github.com/lc/gau/v2/cmd/gau@latest
 
-
-How to use — quick workflow
-
-Clone repo, create .venv and install requirements.
-
 Install at least httpx (or the Go httpx) and subfinder for speed.
 
 # Run the pipeline for a target:
 ./recon.sh example.com
 # or use python orchestrator
-python3 recon.py example.com
+python recon_async.py example.com
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 inspect output/example.com/ for:
+
+wayback_urls.txt - past urls found.
+
+interesting.txt - The interesting urls found.
+
+resolved_ips.txt - 
+
+source.json -
 
 subdomains.txt — all discovered subdomains
 
