@@ -108,6 +108,11 @@ python3 tools/burp_export.py output/example.com
 
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+# OPTIONAL(more finds):
+Look for robot.txt and sourcefile.xml
+cd /tools
+robot.sh example.com 
+
 # Quick troubleshooting
 
 No subdomains.txt? Check subdomains_crtsh.txt and subfinder.txt to see which source failed.
