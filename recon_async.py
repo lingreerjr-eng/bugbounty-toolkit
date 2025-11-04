@@ -14,6 +14,7 @@ from pathlib import Path
 import argparse
 import json
 import os
+from enhanced_subdomain_enum import SubdomainEnumerator
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE / "tools"
@@ -36,52 +37,11 @@ async def run_subprocess(cmd, capture=False):
         await proc.wait()
         return proc.returncode, "", ""
 
-async def crtsh_enum(domain, outpath):
-    """Use local tools/tools/crtsh_enum.py (sync) via subprocess or fallback to crt.sh JSON"""
-    outpath.parent.mkdir(parents=True, exist_ok=True)
-    script = TOOLS / "crtsh_enum.py"
-    if script.exists():
-        rc, out, err = await run_subprocess([sys.executable, str(script), domain], capture=True)
-        if rc == 0 and out:
-            outpath.write_text(out)
-            print(f"[+] crtsh_enum wrote {outpath}")
-            return
-    # fallback: direct HTTP query (sync using curl if available)
-    print("[*] crt.sh script missing or failed; trying HTTP fallback via curl")
-    if shutil.which("curl"):
-        c = ["curl", "-s", f"https://crt.sh/?q=%25.{domain}&output=json"]
-        rc, out, err = await run_subprocess(c, capture=True)
-        if rc == 0 and out:
-            try:
-                entries = json.loads(out)
-                subs = set()
-                for e in entries:
-                    for key in ("common_name","name_value"):
-                        v = e.get(key)
-                        if not v:
-                            continue
-                        if isinstance(v, list):
-                            vals = v
-                        else:
-                            vals = [v]
-                        for n in vals:
-                            for part in str(n).splitlines():
-                                part = part.strip().lower()
-                                if part.endswith(domain):
-                                    subs.add(part)
-                outpath.write_text("\n".join(sorted(subs)))
-                print(f"[+] crt.sh fallback wrote {outpath}")
-                return
-            except Exception as e:
-                print("[!] crt.sh JSON parse failed:", e)
-    print("[!] crt.sh enumeration failed or produced no output")
-
-async def run_subfinder(domain, outpath):
-    if shutil.which("subfinder"):
-        print("[*] running subfinder...")
-        await run_subprocess(["subfinder", "-d", domain, "-o", str(outpath)])
-    else:
-        print("[!] subfinder not installed; skipping subfinder")
+async def enhanced_subdomain_discovery(domain, outdir):
+    """Use the enhanced multi-source enumerator"""
+    enumerator = SubdomainEnumerator(domain, outdir, concurrency=50)
+    await enumerator.enumerate_all()
+    return outdir / f"{domain}_resolved.txt"
 
 async def probe_httpx(in_subdomains_path, out_alive_path):
     out_alive_path.parent.mkdir(parents=True, exist_ok=True)
